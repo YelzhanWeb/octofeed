@@ -15,17 +15,53 @@ type Handler struct {
 	feedService    *services.FeedService
 	articleService *services.ArticleService
 	aggregator     ports.AggregatorPort
+	migrator       ports.Migrator
 }
 
 func NewHandler(
 	feedService *services.FeedService,
 	articleService *services.ArticleService,
 	aggregator ports.AggregatorPort,
+	migrator ports.Migrator,
 ) *Handler {
 	return &Handler{
 		feedService:    feedService,
 		articleService: articleService,
 		aggregator:     aggregator,
+		migrator:       migrator,
+	}
+}
+
+func (h *Handler) Run(args []string) error {
+	if len(args) < 2 {
+		return h.ShowHelp()
+	}
+
+	command := args[1]
+
+	switch command {
+	case "migrate-up":
+		return h.migrator.Up()
+	case "migrate-down":
+		return h.migrator.Down()
+	case "fetch":
+		return h.HandleFetch()
+	case "add":
+		return h.HandleAdd(args[2:])
+	case "set-interval":
+		return h.HandleSetInterval(args[2:])
+	case "set-workers":
+		return h.HandleSetWorkers(args[2:])
+	case "list":
+		return h.HandleList(args[2:])
+	case "delete":
+		return h.HandleDelete(args[2:])
+	case "articles":
+		return h.HandleArticles(args[2:])
+	case "--help", "-h", "help":
+		return h.ShowHelp()
+	default:
+		return fmt.Errorf("unknown command: %s", command)
 	}
 }
 
