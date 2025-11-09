@@ -28,11 +28,6 @@ func run() error {
 	}
 	defer db.Close()
 
-	log.Println("Running migrations...")
-	if err := db.Up(); err != nil {
-		log.Printf("Warning: migrations failed: %v\n", err)
-	}
-
 	feedRepo := postgres.NewFeedRepository(db)
 	articleRepo := postgres.NewArticleRepository(db)
 	rssFetcher := http.NewRSSFetcher()
@@ -51,6 +46,13 @@ func run() error {
 	)
 
 	handler := cli.NewHandler(feedService, articleService, aggregatorService, db)
+
+	if len(os.Args) > 1 && os.Args[1] == "fetch" {
+		log.Println("Running migrations...")
+		if err := db.Up(); err != nil {
+			log.Printf("Warning: migrations failed: %v\n", err)
+		}
+	}
 
 	return handler.Run(os.Args)
 }

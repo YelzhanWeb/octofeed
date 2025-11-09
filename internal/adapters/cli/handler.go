@@ -2,12 +2,14 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"rsshub/internal/core/services"
+	"rsshub/internal/domain"
 	"rsshub/internal/ports"
 )
 
@@ -75,6 +77,10 @@ func (h *Handler) HandleFetch() error {
 	defer cancel()
 
 	if err := h.aggregator.Start(ctx); err != nil {
+		if errors.Is(err, domain.ErrAggregatorAlreadyRunning) {
+			fmt.Println(err.Error())
+			return nil
+		}
 		return fmt.Errorf("failed to start aggregator: %w", err)
 	}
 

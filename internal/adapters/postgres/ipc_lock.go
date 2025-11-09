@@ -25,12 +25,12 @@ func NewIPCLock(db *DB) *IPCLock {
 
 func (l *IPCLock) TryAcquire(ctx context.Context) (bool, error) {
 	var existingLockID string
-	var lockedAt time.Time
+	var updatedAt time.Time
+	query := `SELECT lock_id, updated_at FROM aggregator_lock WHERE id = 1`
 
-	query := `SELECT lock_id, locked_at FROM aggregator_lock WHERE id = 1`
-	err := l.db.conn.QueryRowContext(ctx, query).Scan(&existingLockID, &lockedAt)
+	err := l.db.conn.QueryRowContext(ctx, query).Scan(&existingLockID, &updatedAt)
 	if err == nil {
-		if time.Since(lockedAt) < lockTimeout {
+		if time.Since(updatedAt) < lockTimeout {
 			return false, nil
 		}
 	} else if err != sql.ErrNoRows {
@@ -42,7 +42,7 @@ func (l *IPCLock) TryAcquire(ctx context.Context) (bool, error) {
 		VALUES (1, $1, NOW(), NOW())
 		ON CONFLICT (id) DO UPDATE 
 		SET lock_id = $1, locked_at = NOW(), updated_at = NOW()
-		WHERE aggregator_lock.locked_at < NOW() - INTERVAL '5 minutes'
+		WHERE aggregator_lock.updated_at < NOW() - INTERVAL '5 minutes' 
 		OR aggregator_lock.lock_id = $1
 		RETURNING lock_id
 	`
