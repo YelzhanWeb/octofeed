@@ -73,10 +73,10 @@ func (s *AggregatorService) Start(ctx context.Context) error {
 
 	s.startWorkers(s.workersCount)
 
-	s.wg.Add(3) // fetchLoop, commandListener, keepAliveLoop
+	s.wg.Add(3)
 	go s.fetchLoop()
 	go s.commandListener()
-	go s.keepAliveLoop() // Новая горутина для обновления lock
+	go s.keepAliveLoop()
 
 	log.Printf("The background process for fetching feeds has started (interval = %v, workers = %d)\n",
 		s.interval, s.workersCount)
@@ -120,18 +120,44 @@ func (s *AggregatorService) Stop() error {
 }
 
 func (s *AggregatorService) SetInterval(d time.Duration) error {
-	err := s.ipcLock.SetCommand(context.Background(), "set_interval", d.String())
+	ctx := context.Background()
+
+	err := s.ipcLock.SetCommand(ctx, "set_interval", d.String())
 	if err != nil {
 		return fmt.Errorf("failed to set interval command: %w", err)
 	}
+
+	s.mu.RLock()
+	isRunning := s.running
+	s.mu.RUnlock()
+
+	if isRunning {
+		log.Printf("Interval change scheduled: %v\n", d)
+	} else {
+		log.Printf("Interval change command sent (will be applied by running aggregator)\n")
+	}
+
 	return nil
 }
 
 func (s *AggregatorService) Resize(workers int) error {
-	err := s.ipcLock.SetCommand(context.Background(), "set_workers", fmt.Sprintf("%d", workers))
+	ctx := context.Background()
+
+	err := s.ipcLock.SetCommand(ctx, "set_workers", fmt.Sprintf("%d", workers))
 	if err != nil {
 		return fmt.Errorf("failed to set workers command: %w", err)
 	}
+
+	s.mu.RLock()
+	isRunning := s.running
+	s.mu.RUnlock()
+
+	if isRunning {
+		log.Printf("Workers count change scheduled: %d\n", workers)
+	} else {
+		log.Printf("Workers count change command sent (will be applied by running aggregator)\n")
+	}
+
 	return nil
 }
 
@@ -153,7 +179,6 @@ func (s *AggregatorService) GetWorkersCount() int {
 	return s.workersCount
 }
 
-// keepAliveLoop периодически обновляет timestamp lock'а
 func (s *AggregatorService) keepAliveLoop() {
 	defer s.wg.Done()
 	ticker := time.NewTicker(30 * time.Second)

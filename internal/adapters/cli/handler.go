@@ -111,6 +111,8 @@ func (h *Handler) HandleSetInterval(args []string) error {
 		return fmt.Errorf("failed to set interval: %w", err)
 	}
 
+	fmt.Printf("Interval change request sent: %v\n", duration)
+	fmt.Println("Note: the change will be applied by the running aggregator within a few seconds")
 	return nil
 }
 
@@ -124,6 +126,8 @@ func (h *Handler) HandleSetWorkers(args []string) error {
 		return fmt.Errorf("failed to resize workers: %w", err)
 	}
 
+	fmt.Printf("Workers count change request sent: %d\n", count)
+	fmt.Println("Note: the change will be applied by the running aggregator within a few seconds")
 	return nil
 }
 
