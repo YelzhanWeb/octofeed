@@ -85,6 +85,45 @@ func (db *DB) RunMigrations() error {
 	return nil
 }
 
+func (db *DB) DownMigrations() error {
+	migrationsPath := "./migrations"
+
+	if _, err := os.Stat(migrationsPath); os.IsNotExist(err) {
+		return fmt.Errorf("migrations directory does not exist: %s", migrationsPath)
+	}
+
+	entries, err := os.ReadDir(migrationsPath)
+	if err != nil {
+		return fmt.Errorf("failed to read migrations directory: %w", err)
+	}
+
+	var upFiles []string
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".down.sql") {
+			upFiles = append(upFiles, entry.Name())
+		}
+	}
+
+	sort.Strings(upFiles)
+
+	for _, file := range upFiles {
+		log.Printf("Running migration: %s\n", file)
+
+		fullPath := filepath.Join(migrationsPath, file)
+		content, err := os.ReadFile(fullPath)
+		if err != nil {
+			return fmt.Errorf("failed to read migration file %s: %w", file, err)
+		}
+
+		if _, err := db.conn.Exec(string(content)); err != nil {
+			return fmt.Errorf("failed to execute migration %s: %w", file, err)
+		}
+	}
+
+	log.Println("Migrations completed successfully")
+	return nil
+}
+
 // var migrationsFS embed.FS
 
 // func (db *DB) RunMigrations() error {

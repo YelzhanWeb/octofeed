@@ -1,7 +1,6 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -21,8 +20,6 @@ func main() {
 }
 
 func run() error {
-	migrateUp := flag.Bool("migrate-up", false, "TO DO")
-	migrateDown := flag.Bool("migrate-down", false, "TO DO")
 	cfg := config.NewEnvConfig()
 
 	db, err := postgres.NewDB(cfg.GetDSN())
@@ -30,16 +27,6 @@ func run() error {
 		return fmt.Errorf("failed to connect to database: %w", err)
 	}
 	defer db.Close()
-
-	if *migrateUp {
-		if err := db.RunMigrations(); err != nil {
-			return fmt.Errorf("failed to run migrations: %w", err)
-		}
-	}
-
-	if *migrateDown {
-		// TO DO
-	}
 
 	feedRepo := postgres.NewFeedRepository(db)
 	articleRepo := postgres.NewArticleRepository(db)
@@ -58,5 +45,38 @@ func run() error {
 
 	handler := cli.NewHandler(feedService, articleService, aggregatorService)
 
-	return handler.Run(os.Args)
+	return runCommands(os.Args, handler, db)
+}
+
+func runCommands(args []string, h *cli.Handler, db *postgres.DB) error {
+	if len(args) < 2 {
+		return h.ShowHelp()
+	}
+
+	command := args[1]
+
+	switch command {
+	case "migrate-up":
+		return db.RunMigrations()
+	case "migrate-down":
+		return db.DownMigrations()
+	case "fetch":
+		return h.HandleFetch()
+	case "add":
+		return h.HandleAdd(args[2:])
+	case "set-interval":
+		return h.HandleSetInterval(args[2:])
+	case "set-workers":
+		return h.HandleSetWorkers(args[2:])
+	case "list":
+		return h.HandleList(args[2:])
+	case "delete":
+		return h.HandleDelete(args[2:])
+	case "articles":
+		return h.HandleArticles(args[2:])
+	case "--help", "-h", "help":
+		return h.ShowHelp()
+	default:
+		return fmt.Errorf("unknown command: %s", command)
+	}
 }

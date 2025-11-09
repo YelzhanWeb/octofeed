@@ -29,36 +29,7 @@ func NewHandler(
 	}
 }
 
-func (h *Handler) Run(args []string) error {
-	if len(args) < 2 {
-		return h.showHelp()
-	}
-
-	command := args[1]
-
-	switch command {
-	case "fetch":
-		return h.handleFetch()
-	case "add":
-		return h.handleAdd(args[2:])
-	case "set-interval":
-		return h.handleSetInterval(args[2:])
-	case "set-workers":
-		return h.handleSetWorkers(args[2:])
-	case "list":
-		return h.handleList(args[2:])
-	case "delete":
-		return h.handleDelete(args[2:])
-	case "articles":
-		return h.handleArticles(args[2:])
-	case "--help", "-h", "help":
-		return h.showHelp()
-	default:
-		return fmt.Errorf("unknown command: %s", command)
-	}
-}
-
-func (h *Handler) handleFetch() error {
+func (h *Handler) HandleFetch() error {
 	if h.aggregator.IsRunning() {
 		fmt.Println("Background process is already running")
 		return nil
@@ -79,7 +50,7 @@ func (h *Handler) handleFetch() error {
 	return h.aggregator.Stop()
 }
 
-func (h *Handler) handleAdd(args []string) error {
+func (h *Handler) HandleAdd(args []string) error {
 	name, url, err := parseAddFlags(args)
 	if err != nil {
 		return err
@@ -94,7 +65,7 @@ func (h *Handler) handleAdd(args []string) error {
 	return nil
 }
 
-func (h *Handler) handleSetInterval(args []string) error {
+func (h *Handler) HandleSetInterval(args []string) error {
 	duration, err := parseSetIntervalFlags(args)
 	if err != nil {
 		return err
@@ -107,7 +78,7 @@ func (h *Handler) handleSetInterval(args []string) error {
 	return nil
 }
 
-func (h *Handler) handleSetWorkers(args []string) error {
+func (h *Handler) HandleSetWorkers(args []string) error {
 	count, err := parseSetWorkersFlags(args)
 	if err != nil {
 		return err
@@ -120,7 +91,7 @@ func (h *Handler) handleSetWorkers(args []string) error {
 	return nil
 }
 
-func (h *Handler) handleList(args []string) error {
+func (h *Handler) HandleList(args []string) error {
 	num, err := parseListFlags(args)
 	if err != nil {
 		return err
@@ -149,7 +120,7 @@ func (h *Handler) handleList(args []string) error {
 	return nil
 }
 
-func (h *Handler) handleDelete(args []string) error {
+func (h *Handler) HandleDelete(args []string) error {
 	name, err := parseDeleteFlags(args)
 	if err != nil {
 		return err
@@ -164,7 +135,7 @@ func (h *Handler) handleDelete(args []string) error {
 	return nil
 }
 
-func (h *Handler) handleArticles(args []string) error {
+func (h *Handler) HandleArticles(args []string) error {
 	feedName, num, err := parseArticlesFlags(args)
 	if err != nil {
 		return err
@@ -197,7 +168,7 @@ func (h *Handler) handleArticles(args []string) error {
 	return nil
 }
 
-func (h *Handler) showHelp() error {
+func (h *Handler) ShowHelp() error {
 	help := `
 Usage:
   rsshub COMMAND [OPTIONS]
