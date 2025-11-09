@@ -22,7 +22,7 @@ services:
       dockerfile: Dockerfile
     container_name: rsshub_app
     env_file:
-      - .env
+      - .env.example
     depends_on:
       postgres:
         condition: service_healthy

@@ -23,3 +23,5 @@ test:
 
 install-tools:
 	go install mvdan.cc/gofumpt@latest
+
+docker-d-u: docker-down docker-up

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"rsshub/internal/domain"
@@ -16,62 +15,70 @@ type AggregatorService struct {
 	feedRepo    ports.FeedRepository
 	articleRepo ports.ArticleRepository
 	rssFetcher  ports.RSSFetcher
+	ipcLock     ports.IPCLock
 
 	mu             sync.RWMutex
-	interval       atomic.Value // time.Duration
-	workersCount   atomic.Int32
-	running        atomic.Bool
+	interval       time.Duration
+	workersCount   int
+	running        bool
 	ticker         *time.Ticker
 	jobs           chan *domain.Feed
+	ctx            context.Context
 	cancel         context.CancelFunc
 	wg             sync.WaitGroup
 	stopOnce       sync.Once
-	resizeMu       sync.Mutex
-	currentWorkers int32
+	workerContexts []context.CancelFunc
 }
 
 func NewAggregatorService(
 	feedRepo ports.FeedRepository,
 	articleRepo ports.ArticleRepository,
 	rssFetcher ports.RSSFetcher,
+	ipcLock ports.IPCLock,
 	defaultInterval time.Duration,
 	defaultWorkers int,
 ) ports.AggregatorPort {
-	svc := &AggregatorService{
-		feedRepo:    feedRepo,
-		articleRepo: articleRepo,
-		rssFetcher:  rssFetcher,
-		jobs:        make(chan *domain.Feed, 100),
+	return &AggregatorService{
+		feedRepo:     feedRepo,
+		articleRepo:  articleRepo,
+		rssFetcher:   rssFetcher,
+		ipcLock:      ipcLock,
+		interval:     defaultInterval,
+		workersCount: defaultWorkers,
+		jobs:         make(chan *domain.Feed, 100),
 	}
-	svc.interval.Store(defaultInterval)
-	svc.workersCount.Store(int32(defaultWorkers))
-	return svc
 }
 
 func (s *AggregatorService) Start(ctx context.Context) error {
-	if s.running.Load() {
-		return fmt.Errorf("aggregator is already running")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.running {
+		return fmt.Errorf("aggregator is already running in this process")
 	}
 
-	s.running.Store(true)
-	ctx, cancel := context.WithCancel(ctx)
-	s.cancel = cancel
-
-	interval := s.interval.Load().(time.Duration)
-	s.ticker = time.NewTicker(interval)
-
-	workersCount := int(s.workersCount.Load())
-	for i := 0; i < workersCount; i++ {
-		s.wg.Add(1)
-		go s.worker(ctx, i+1)
+	acquired, err := s.ipcLock.TryAcquire(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to check lock: %w", err)
 	}
-	s.currentWorkers = int32(workersCount)
+	if !acquired {
+		fmt.Println("Background process is already running")
+		return nil
+	}
 
-	s.wg.Add(1)
-	go s.fetchLoop(ctx)
+	s.running = true
+	s.ctx, s.cancel = context.WithCancel(ctx)
+	s.ticker = time.NewTicker(s.interval)
+	s.workerContexts = make([]context.CancelFunc, 0)
+
+	s.startWorkers(s.workersCount)
+
+	s.wg.Add(2)
+	go s.fetchLoop()
+	go s.commandListener()
 
 	log.Printf("The background process for fetching feeds has started (interval = %v, workers = %d)\n",
-		interval, workersCount)
+		s.interval, s.workersCount)
 
 	return nil
 }
@@ -79,17 +86,28 @@ func (s *AggregatorService) Start(ctx context.Context) error {
 func (s *AggregatorService) Stop() error {
 	var stopErr error
 	s.stopOnce.Do(func() {
-		if !s.running.Load() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+
+		if !s.running {
 			stopErr = fmt.Errorf("aggregator is not running")
 			return
 		}
 
-		s.running.Store(false)
+		s.running = false
 		if s.cancel != nil {
 			s.cancel()
 		}
 		if s.ticker != nil {
 			s.ticker.Stop()
+		}
+
+		for _, cancelFunc := range s.workerContexts {
+			cancelFunc()
+		}
+
+		if err := s.ipcLock.Release(context.Background()); err != nil {
+			log.Printf("Warning: failed to release lock: %v\n", err)
 		}
 
 		s.wg.Wait()
@@ -101,15 +119,79 @@ func (s *AggregatorService) Stop() error {
 }
 
 func (s *AggregatorService) SetInterval(d time.Duration) error {
-	if !s.running.Load() {
-		return fmt.Errorf("aggregator is not running")
+	err := s.ipcLock.SetCommand(context.Background(), "set_interval", d.String())
+	if err != nil {
+		return fmt.Errorf("failed to set interval command: %w", err)
+	}
+	return nil
+}
+
+func (s *AggregatorService) Resize(workers int) error {
+	err := s.ipcLock.SetCommand(context.Background(), "set_workers", fmt.Sprintf("%d", workers))
+	if err != nil {
+		return fmt.Errorf("failed to set workers command: %w", err)
+	}
+	return nil
+}
+
+func (s *AggregatorService) IsRunning() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.running
+}
+
+func (s *AggregatorService) GetInterval() time.Duration {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.interval
+}
+
+func (s *AggregatorService) GetWorkersCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.workersCount
+}
+
+func (s *AggregatorService) commandListener() {
+	defer s.wg.Done()
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-ticker.C:
+			s.checkCommands()
+		}
+	}
+}
+
+func (s *AggregatorService) checkCommands() {
+	ctx := context.Background()
+
+	if intervalStr, err := s.ipcLock.GetCommand(ctx, "set_interval"); err == nil && intervalStr != "" {
+		if d, err := time.ParseDuration(intervalStr); err == nil {
+			s.applySetInterval(d)
+			s.ipcLock.SetCommand(ctx, "set_interval", "") // Очищаем команду
+		}
 	}
 
+	if workersStr, err := s.ipcLock.GetCommand(ctx, "set_workers"); err == nil && workersStr != "" {
+		var workers int
+		if _, err := fmt.Sscanf(workersStr, "%d", &workers); err == nil {
+			s.applyResize(workers)
+			s.ipcLock.SetCommand(ctx, "set_workers", "") // Очищаем команду
+		}
+	}
+}
+
+func (s *AggregatorService) applySetInterval(d time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	oldInterval := s.interval.Load().(time.Duration)
-	s.interval.Store(d)
+	oldInterval := s.interval
+	s.interval = d
 
 	if s.ticker != nil {
 		s.ticker.Stop()
@@ -117,74 +199,63 @@ func (s *AggregatorService) SetInterval(d time.Duration) error {
 	}
 
 	log.Printf("Interval of fetching feeds changed from %v to %v\n", oldInterval, d)
-	return nil
 }
 
-func (s *AggregatorService) Resize(workers int) error {
-	if !s.running.Load() {
-		return fmt.Errorf("aggregator is not running")
-	}
+func (s *AggregatorService) applyResize(newCount int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	s.resizeMu.Lock()
-	defer s.resizeMu.Unlock()
-
-	oldCount := int(s.currentWorkers)
-	newCount := workers
-
+	oldCount := s.workersCount
 	if newCount == oldCount {
-		return nil
-	}
-
-	s.workersCount.Store(int32(newCount))
-
-	ctx := context.Background()
-	if s.cancel != nil {
-		ctx = context.Background()
+		return
 	}
 
 	if newCount > oldCount {
-		for i := oldCount; i < newCount; i++ {
-			s.wg.Add(1)
-			go s.worker(ctx, i+1)
+		s.startWorkers(newCount - oldCount)
+	} else {
+		diff := oldCount - newCount
+		for i := 0; i < diff && len(s.workerContexts) > 0; i++ {
+			lastIdx := len(s.workerContexts) - 1
+			s.workerContexts[lastIdx]()
+			s.workerContexts = s.workerContexts[:lastIdx]
 		}
 	}
 
-	s.currentWorkers = int32(newCount)
-
+	s.workersCount = newCount
 	log.Printf("Number of workers changed from %d to %d\n", oldCount, newCount)
-	return nil
 }
 
-func (s *AggregatorService) IsRunning() bool {
-	return s.running.Load()
+func (s *AggregatorService) startWorkers(count int) {
+	for i := 0; i < count; i++ {
+		workerCtx, workerCancel := context.WithCancel(s.ctx)
+		s.workerContexts = append(s.workerContexts, workerCancel)
+
+		s.wg.Add(1)
+		go s.worker(workerCtx, len(s.workerContexts))
+	}
 }
 
-func (s *AggregatorService) GetInterval() time.Duration {
-	return s.interval.Load().(time.Duration)
-}
-
-func (s *AggregatorService) GetWorkersCount() int {
-	return int(s.workersCount.Load())
-}
-
-func (s *AggregatorService) fetchLoop(ctx context.Context) {
+func (s *AggregatorService) fetchLoop() {
 	defer s.wg.Done()
 
-	s.processBatch(ctx)
+	s.processBatch()
 
 	for {
 		select {
-		case <-ctx.Done():
+		case <-s.ctx.Done():
 			return
 		case <-s.ticker.C:
-			s.processBatch(ctx)
+			s.processBatch()
 		}
 	}
 }
 
-func (s *AggregatorService) processBatch(ctx context.Context) {
-	workersCount := int(s.workersCount.Load())
-	feeds, err := s.feedRepo.GetMostOutdated(ctx, workersCount*2)
+func (s *AggregatorService) processBatch() {
+	s.mu.RLock()
+	workersCount := s.workersCount
+	s.mu.RUnlock()
+
+	feeds, err := s.feedRepo.GetMostOutdated(context.Background(), workersCount*2)
 	if err != nil {
 		log.Printf("Error fetching outdated feeds: %v\n", err)
 		return
@@ -192,7 +263,7 @@ func (s *AggregatorService) processBatch(ctx context.Context) {
 
 	for _, feed := range feeds {
 		select {
-		case <-ctx.Done():
+		case <-s.ctx.Done():
 			return
 		case s.jobs <- feed:
 		default:
@@ -212,21 +283,15 @@ func (s *AggregatorService) worker(ctx context.Context, id int) {
 			if !ok {
 				return
 			}
-
-			currentWorkers := int(s.currentWorkers)
-			if id > currentWorkers {
-				return
-			}
-
-			s.processFeed(ctx, feed)
+			s.processFeed(feed)
 		}
 	}
 }
 
-func (s *AggregatorService) processFeed(ctx context.Context, feed *domain.Feed) {
+func (s *AggregatorService) processFeed(feed *domain.Feed) {
 	log.Printf("Worker processing feed: %s (%s)\n", feed.Name, feed.URL)
 
-	rssFeed, err := s.rssFetcher.Fetch(ctx, feed.URL)
+	rssFeed, err := s.rssFetcher.Fetch(context.Background(), feed.URL)
 	if err != nil {
 		log.Printf("Error fetching RSS feed %s: %v\n", feed.Name, err)
 		return
@@ -234,7 +299,7 @@ func (s *AggregatorService) processFeed(ctx context.Context, feed *domain.Feed) 
 
 	var newArticles []*domain.Article
 	for _, item := range rssFeed.Channel.Items {
-		exists, err := s.articleRepo.Exists(ctx, item.Link, feed.ID)
+		exists, err := s.articleRepo.Exists(context.Background(), item.Link, feed.ID)
 		if err != nil {
 			log.Printf("Error checking article existence: %v\n", err)
 			continue
@@ -249,7 +314,7 @@ func (s *AggregatorService) processFeed(ctx context.Context, feed *domain.Feed) 
 	}
 
 	if len(newArticles) > 0 {
-		if err := s.articleRepo.CreateBatch(ctx, newArticles); err != nil {
+		if err := s.articleRepo.CreateBatch(context.Background(), newArticles); err != nil {
 			log.Printf("Error saving articles for feed %s: %v\n", feed.Name, err)
 			return
 		}
@@ -257,7 +322,7 @@ func (s *AggregatorService) processFeed(ctx context.Context, feed *domain.Feed) 
 	}
 
 	feed.MarkAsFetched()
-	if err := s.feedRepo.Update(ctx, feed); err != nil {
+	if err := s.feedRepo.Update(context.Background(), feed); err != nil {
 		log.Printf("Error updating feed %s: %v\n", feed.Name, err)
 	}
 }

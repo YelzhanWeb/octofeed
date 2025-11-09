@@ -7,7 +7,7 @@ RUN go mod download
 
 COPY . .
 
-RUN CGO_ENABLED=0 GOOS=linux go build -o rsshub ./cmd/cli
+RUN CGO_ENABLED=0 GOOS=linux go build -o rsshub ./cmd/cli/main.go
 
 FROM alpine:latest
 
