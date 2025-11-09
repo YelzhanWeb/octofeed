@@ -1,7 +1,7 @@
 .PHONY: build run clean docker-up docker-down fmt test
 
 build:
-	go build -o rsshub ./cmd/main.go
+	go build -o rsshub ./cmd/cli/main.go
 
 run: build
 	./rsshub

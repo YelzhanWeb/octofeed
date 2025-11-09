@@ -7,7 +7,7 @@ RUN go mod download
 
 COPY . .
 
-RUN CGO_ENABLED=0 GOOS=linux go build -o rsshub ./cmd/rsshub
+RUN CGO_ENABLED=0 GOOS=linux go build -o rsshub ./cmd/cli
 
 FROM alpine:latest
 
@@ -18,4 +18,4 @@ WORKDIR /app
 COPY --from=builder /build/rsshub .
 COPY --from=builder /build/migrations ./migrations
 
-ENTRYPOINT ["/bin/sh"]
+ENTRYPOINT ["/app/rsshub"]
