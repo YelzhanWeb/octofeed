@@ -73,9 +73,10 @@ func (s *AggregatorService) Start(ctx context.Context) error {
 
 	s.startWorkers(s.workersCount)
 
-	s.wg.Add(2)
+	s.wg.Add(3) // fetchLoop, commandListener, keepAliveLoop
 	go s.fetchLoop()
 	go s.commandListener()
+	go s.keepAliveLoop() // Новая горутина для обновления lock
 
 	log.Printf("The background process for fetching feeds has started (interval = %v, workers = %d)\n",
 		s.interval, s.workersCount)
@@ -152,6 +153,24 @@ func (s *AggregatorService) GetWorkersCount() int {
 	return s.workersCount
 }
 
+// keepAliveLoop периодически обновляет timestamp lock'а
+func (s *AggregatorService) keepAliveLoop() {
+	defer s.wg.Done()
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-ticker.C:
+			if err := s.ipcLock.KeepAlive(context.Background()); err != nil {
+				log.Printf("Warning: failed to keep lock alive: %v\n", err)
+			}
+		}
+	}
+}
+
 func (s *AggregatorService) commandListener() {
 	defer s.wg.Done()
 	ticker := time.NewTicker(2 * time.Second)
@@ -173,7 +192,7 @@ func (s *AggregatorService) checkCommands() {
 	if intervalStr, err := s.ipcLock.GetCommand(ctx, "set_interval"); err == nil && intervalStr != "" {
 		if d, err := time.ParseDuration(intervalStr); err == nil {
 			s.applySetInterval(d)
-			s.ipcLock.SetCommand(ctx, "set_interval", "") // Очищаем команду
+			s.ipcLock.SetCommand(ctx, "set_interval", "")
 		}
 	}
 
@@ -181,7 +200,7 @@ func (s *AggregatorService) checkCommands() {
 		var workers int
 		if _, err := fmt.Sscanf(workersStr, "%d", &workers); err == nil {
 			s.applyResize(workers)
-			s.ipcLock.SetCommand(ctx, "set_workers", "") // Очищаем команду
+			s.ipcLock.SetCommand(ctx, "set_workers", "")
 		}
 	}
 }

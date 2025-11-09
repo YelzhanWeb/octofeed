@@ -40,7 +40,7 @@ func (r *FeedRepository) GetByName(ctx context.Context, name string) (*domain.Fe
 	err := r.db.conn.QueryRowContext(ctx, query, name).Scan(
 		&feed.ID, &feed.CreatedAt, &feed.UpdatedAt, &feed.Name, &feed.URL, &feed.LastFetchedAt)
 	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("feed not found: %s", name)
+		return nil, domain.ErrNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to get feed: %w", err)
